@@ -319,6 +319,7 @@ def package_qa_check_libdir(d):
     installing in /usr/lib64 when ${libdir}="/usr/lib"
     """
     import re
+    import oe.parsers.elf
 
     pkgdest = d.getVar('PKGDEST')
     base_libdir = d.getVar("base_libdir") + os.sep
@@ -355,21 +356,19 @@ def package_qa_check_libdir(d):
                 rel_path = os.sep + rel_path
                 if lib_re.match(rel_path):
                     if base_libdir not in rel_path:
-                        # make sure it's an actual ELF file
-                        elf = oe.qa.ELFFile(full_path)
+                        # Validate that we've got an ELF
                         try:
-                            elf.open()
+                            oe.parsers.elf.Elf.from_file(full_path)
                             messages.append("%s: found library in wrong location: %s" % (package, rel_path))
-                        except (oe.qa.NotELFFileError):
+                        except:
                             pass
                 if exec_re.match(rel_path):
                     if libdir not in rel_path and libexecdir not in rel_path:
-                        # make sure it's an actual ELF file
-                        elf = oe.qa.ELFFile(full_path)
+                        # Validate that we've got an ELF
                         try:
-                            elf.open()
+                            oe.parsers.elf.Elf.from_file(full_path)
                             messages.append("%s: found library in wrong location: %s" % (package, rel_path))
-                        except (oe.qa.NotELFFileError):
+                        except:
                             pass
 
     if messages:
