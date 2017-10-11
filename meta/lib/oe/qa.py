@@ -1,126 +1,37 @@
 import os, struct, mmap
+from oe.parsers.elf import Elf
 
 class NotELFFileError(Exception):
     pass
 
 class ELFFile:
-    EI_NIDENT = 16
-
-    EI_CLASS      = 4
-    EI_DATA       = 5
-    EI_VERSION    = 6
-    EI_OSABI      = 7
-    EI_ABIVERSION = 8
-
-    E_MACHINE    = 0x12
-
-    # possible values for EI_CLASS
-    ELFCLASSNONE = 0
-    ELFCLASS32   = 1
-    ELFCLASS64   = 2
-
-    # possible value for EI_VERSION
-    EV_CURRENT   = 1
-
-    # possible values for EI_DATA
-    EI_DATA_NONE  = 0
-    EI_DATA_LSB  = 1
-    EI_DATA_MSB  = 2
-
-    PT_INTERP = 3
-
-    def my_assert(self, expectation, result):
-        if not expectation == result:
-            #print "'%x','%x' %s" % (ord(expectation), ord(result), self.name)
-            raise NotELFFileError("%s is not an ELF" % self.name)
-
     def __init__(self, name):
         self.name = name
         self.objdump_output = {}
 
-    # Context Manager functions to close the mmap explicitly
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc_value, traceback):
-        self.data.close()
-
     def open(self):
-        with open(self.name, "rb") as f:
-            try:
-                self.data = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
-            except ValueError:
-                # This means the file is empty
-                raise NotELFFileError("%s is empty" % self.name)
-
-        # Check the file has the minimum number of ELF table entries
-        if len(self.data) < ELFFile.EI_NIDENT + 4:
-            raise NotELFFileError("%s is not an ELF" % self.name)
-
-        # ELF header
-        self.my_assert(self.data[0], 0x7f)
-        self.my_assert(self.data[1], ord('E'))
-        self.my_assert(self.data[2], ord('L'))
-        self.my_assert(self.data[3], ord('F'))
-        if self.data[ELFFile.EI_CLASS] == ELFFile.ELFCLASS32:
-            self.bits = 32
-        elif self.data[ELFFile.EI_CLASS] == ELFFile.ELFCLASS64:
-            self.bits = 64
-        else:
-            # Not 32-bit or 64.. lets assert
-            raise NotELFFileError("ELF but not 32 or 64 bit.")
-        self.my_assert(self.data[ELFFile.EI_VERSION], ELFFile.EV_CURRENT)
-
-        self.endian = self.data[ELFFile.EI_DATA]
-        if self.endian not in (ELFFile.EI_DATA_LSB, ELFFile.EI_DATA_MSB):
-            raise NotELFFileError("Unexpected EI_DATA %x" % self.endian)
-
-    def osAbi(self):
-        return self.data[ELFFile.EI_OSABI]
-
-    def abiVersion(self):
-        return self.data[ELFFile.EI_ABIVERSION]
+        try:
+            self.elf = Elf.from_file(self.name)
+        except Exception as e:
+            raise NotELFFileError(str(e))
 
     def abiSize(self):
-        return self.bits
+        if self.elf.bits == Elf.Bits.b32:
+            return 32
+        else:
+            return 64
 
     def isLittleEndian(self):
-        return self.endian == ELFFile.EI_DATA_LSB
-
-    def isBigEndian(self):
-        return self.endian == ELFFile.EI_DATA_MSB
-
-    def getStructEndian(self):
-        return {ELFFile.EI_DATA_LSB: "<",
-                ELFFile.EI_DATA_MSB: ">"}[self.endian]
-
-    def getShort(self, offset):
-        return struct.unpack_from(self.getStructEndian() + "H", self.data, offset)[0]
-
-    def getWord(self, offset):
-        return struct.unpack_from(self.getStructEndian() + "i", self.data, offset)[0]
+        return self.elf.endian == Elf.Endian.le
 
     def isDynamic(self):
-        """
-        Return True if there is a .interp segment (therefore dynamically
-        linked), otherwise False (statically linked).
-        """
-        offset = self.getWord(self.bits == 32 and 0x1C or 0x20)
-        size = self.getShort(self.bits == 32 and 0x2A or 0x36)
-        count = self.getShort(self.bits == 32 and 0x2C or 0x38)
-
-        for i in range(0, count):
-            p_type = self.getWord(offset + i * size)
-            if p_type == ELFFile.PT_INTERP:
+        for p in self.elf.header.program_headers:
+            if p.type == Elf.PhType.interp:
                 return True
         return False
 
     def machine(self):
-        """
-        We know the endian stored in self.endian and we
-        know the position
-        """
-        return self.getShort(ELFFile.E_MACHINE)
+        return self.elf.header.machine.value
 
     def run_objdump(self, cmd, d):
         import bb.process
@@ -150,22 +61,15 @@ def elf_machine_to_string(machine):
     """
     try:
         return {
-            0x02: "SPARC",
-            0x03: "x86",
-            0x08: "MIPS",
-            0x14: "PowerPC",
-            0x28: "ARM",
-            0x2A: "SuperH",
-            0x32: "IA-64",
-            0x3E: "x86-64",
-            0xB7: "AArch64"
+            Elf.Machine.sparc.value: "SPARC",
+            Elf.Machine.x86.value: "x86",
+            Elf.Machine.mips.value: "MIPS",
+            Elf.Machine.powerpc.value: "PowerPC",
+            Elf.Machine.arm.value: "ARM",
+            Elf.Machine.superh.value: "SuperH",
+            Elf.Machine.ia_64.value: "IA-64",
+            Elf.Machine.x86_64.value: "x86-64",
+            Elf.Machine.aarch64.value: "AArch64"
         }[machine]
-    except:
+    except KeyError:
         return "Unknown (%s)" % repr(machine)
-
-if __name__ == "__main__":
-    import sys
-
-    with ELFFile(sys.argv[1]) as elf:
-        elf.open()
-        print(elf.isDynamic())
