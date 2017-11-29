@@ -10,28 +10,30 @@ def runstrip(arg):
 
     import stat, subprocess
 
-    (file, elftype, strip) = arg
+    (elf, strip) = arg
+
+    name = elf['name']
 
     newmode = None
-    if not os.access(file, os.W_OK) or os.access(file, os.R_OK):
-        origmode = os.stat(file)[stat.ST_MODE]
+    if not os.access(name, os.W_OK) or os.access(name, os.R_OK):
+        origmode = os.stat(name)[stat.ST_MODE]
         newmode = origmode | stat.S_IWRITE | stat.S_IREAD
-        os.chmod(file, newmode)
+        os.chmod(name, newmode)
 
     stripcmd = [strip]
 
-    # kernel module    
-    if elftype & 16:
+    # kernel module
+    if elf['module']:
         stripcmd.extend(["--strip-debug", "--remove-section=.comment",
             "--remove-section=.note", "--preserve-dates"])
     # .so and shared library
-    elif ".so" in file and elftype & 8:
+    elif elf['dyn_so']:
         stripcmd.extend(["--remove-section=.comment", "--remove-section=.note", "--strip-unneeded"])
     # shared or executable:
-    elif elftype & 8 or elftype & 4:
+    elif elf['dynamic'] or elf['executable']:
         stripcmd.extend(["--remove-section=.comment", "--remove-section=.note"])
 
-    stripcmd.append(file)
+    stripcmd.append(name)
     bb.debug(1, "runstrip: %s" % stripcmd)
 
     try:
@@ -40,7 +42,7 @@ def runstrip(arg):
         bb.error("runstrip: '%s' strip command failed with %s (%s)" % (stripcmd, e.returncode, e.output))
 
     if newmode:
-        os.chmod(file, origmode)
+        os.chmod(name, origmode)
 
     return
 
@@ -56,42 +58,9 @@ def strip_execs(pn, dstdir, strip_cmd, libdir, base_libdir, qa_already_stripped=
     :param qa_already_stripped: Set to True if already-stripped' in ${INSANE_SKIP}
     This is for proper logging and messages only.
     """
-    import stat, errno, oe.path, oe.utils, mmap
+    import stat, errno, oe.elf, oe.path, oe.utils
 
-    # Detect .ko module by searching for "vermagic=" string
-    def is_kernel_module(path):
-        with open(path) as f:
-            return mmap.mmap(f.fileno(), 0, prot=mmap.PROT_READ).find(b"vermagic=") >= 0
-
-    # Return type (bits):
-    # 0 - not elf
-    # 1 - ELF
-    # 2 - stripped
-    # 4 - executable
-    # 8 - shared library
-    # 16 - kernel module
-    def is_elf(path):
-        exec_type = 0
-        ret, result = oe.utils.getstatusoutput(
-            "file \"%s\"" % path.replace("\"", "\\\""))
-
-        if ret:
-            bb.error("split_and_strip_files: 'file %s' failed" % path)
-            return exec_type
-
-        if "ELF" in result:
-            exec_type |= 1
-            if "not stripped" not in result:
-                exec_type |= 2
-            if "executable" in result:
-                exec_type |= 4
-            if "shared" in result:
-                exec_type |= 8
-            if "relocatable" in result and is_kernel_module(path):
-                exec_type |= 16
-        return exec_type
-
-    elffiles = {}
+    elffiles = []
     inodes = {}
     libdir = os.path.abspath(dstdir + os.sep + libdir)
     base_libdir = os.path.abspath(dstdir + os.sep + base_libdir)
@@ -124,33 +93,33 @@ def strip_execs(pn, dstdir, strip_cmd, libdir, base_libdir, qa_already_stripped=
 
                 # It's a file (or hardlink), not a link
                 # ...but is it ELF, and is it already stripped?
-                elf_file = is_elf(file)
-                if elf_file & 1:
-                    if elf_file & 2:
-                        if qa_already_stripped:
-                            bb.note("Skipping file %s from %s for already-stripped QA test" % (file[len(dstdir):], pn))
-                        else:
-                            bb.warn("File '%s' from %s was already stripped, this will prevent future debugging!" % (file[len(dstdir):], pn))
-                        continue
+                try:
+                    elf = oe.elf.Elf(file)
+                except oe.elf.NotELFFileError:
+                    continue
 
-                    if s.st_ino in inodes:
-                        os.unlink(file)
-                        os.link(inodes[s.st_ino], file)
+                if elf.is_stripped():
+                    if qa_already_stripped:
+                        bb.note("Skipping file %s from %s for already-stripped QA test" % (file[len(dstdir):], pn))
                     else:
-                        # break hardlinks so that we do not strip the original.
-                        inodes[s.st_ino] = file
-                        bb.utils.copyfile(file, file)
-                        elffiles[file] = elf_file
+                        bb.warn("File '%s' from %s was already stripped, this will prevent future debugging!" % (file[len(dstdir):], pn))
+                    continue
+
+                if s.st_ino in inodes:
+                    os.unlink(file)
+                    os.link(inodes[s.st_ino], file)
+                else:
+                    # break hardlinks so that we do not strip the original.
+                    inodes[s.st_ino] = file
+                    bb.utils.copyfile(file, file)
+                    elffiles.append(elf)
 
     #
     # Now strip them (in parallel)
     #
-    sfiles = []
-    for file in elffiles:
-        elf_file = int(elffiles[file])
-        sfiles.append((file, elf_file, strip_cmd))
-
-    oe.utils.multiprocess_exec(sfiles, runstrip)
+    oe.utils.multiprocess_exec(
+        [(x.get_dict(), strip_cmd) for x in elffiles], runstrip
+    )
 
 
 
