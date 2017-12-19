@@ -429,15 +429,15 @@ def package_qa_check_arch(path,name,d, elf, messages):
     # Check the architecture and endiannes of the binary
     is_32 = (("virtual/kernel" in provides) or bb.data.inherits_class("module", d)) and \
             (target_os == "linux-gnux32" or target_os == "linux-muslx32"  or re.match('mips64.*32', d.getVar('DEFAULTTUNE')))
-    if not ((machine == elf.machine()) or is_32):
+    if not ((machine == elf.machine_id) or is_32):
         package_qa_add_message(messages, "arch", "Architecture did not match (%s, expected %s) on %s" % \
-                 (oe.qa.elf_machine_to_string(elf.machine()), oe.qa.elf_machine_to_string(machine), package_qa_clean_path(path,d)))
-    elif not ((bits == elf.abiSize()) or is_32):
+                 (elf.machine, oe.elf.elf_machine_to_string(machine), package_qa_clean_path(path,d)))
+    elif not ((bits == elf.abi_size) or is_32):
         package_qa_add_message(messages, "arch", "Bit size did not match (%d to %d) %s on %s" % \
-                 (bits, elf.abiSize(), bpn, package_qa_clean_path(path,d)))
-    elif not littleendian == elf.isLittleEndian():
+                 (bits, elf.abi_size, bpn, package_qa_clean_path(path,d)))
+    elif not littleendian == elf.is_little_endian():
         package_qa_add_message(messages, "arch", "Endiannes did not match (%d to %d) on %s" % \
-                 (littleendian, elf.isLittleEndian(), package_qa_clean_path(path,d)))
+                 (littleendian, elf.is_little_endian(), package_qa_clean_path(path,d)))
 
 QAPATHTEST[desktop] = "package_qa_check_desktop"
 def package_qa_check_desktop(path, name, d, elf, messages):
@@ -773,7 +773,7 @@ def package_qa_recipe(warnfuncs, errorfuncs, pn, d):
 
 # Walk over all files in a directory and call func
 def package_qa_walk(warnfuncs, errorfuncs, package, d):
-    import oe.qa
+    import oe.elf
 
     #if this will throw an exception, then fix the dict above
     target_os   = d.getVar('TARGET_OS')
@@ -782,11 +782,9 @@ def package_qa_walk(warnfuncs, errorfuncs, package, d):
     warnings = {}
     errors = {}
     for path in pkgfiles[package]:
-            elf = oe.qa.ELFFile(path)
             try:
-                elf.open()
-            except (IOError, oe.qa.NotELFFileError):
-                # IOError can happen if the packaging control files disappear,
+                elf = oe.elf.Elf(path)
+            except oe.elf.NotELFFileError:
                 elf = None
             for func in warnfuncs:
                 func(path, package, d, elf, warnings)
